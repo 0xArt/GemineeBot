@@ -135,7 +135,7 @@ def restoreRecord(target, record):
                     break
             return record
 
-def addrow(df, data):
+def addRow(df, data):
     df.loc[-1] = data  # adding a row
     df.index = df.index + 1  # shifting index
     df = df.sort_index()  # sorting by index
@@ -146,6 +146,8 @@ def e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc):
     global fee
     global e2bRecordBear
     eth = 0
+
+    # check and update balance
     try:
         balance = Gemcon.balances()
         if (balance.status_code == 200):
@@ -159,13 +161,16 @@ def e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc):
         logger(fname, 'balance request try fail')
         logger(fname, e)
 
-    if (eth - ethReserved > 0.001):  # if we have enough eth
+    # if we have enough eth
+    if (eth - ethReserved > 0.001):
         market = json.loads(Gemcon.book('ethbtc'))
+        # iteratively scan order book
         for i in range(0, len(market['bids'])):
             bid_rate = np.round(float(market['bids'][i]['price']), 5)
             bid_amount = roundDown(float(market['bids'][i]['amount']), 6)
-
-            if (bid_rate / ethbtc[-1] > 0.99 and eth - ethReserved > 0.001):  # if order book is close to our target
+            # if order book is close to our target
+            if (bid_rate / ethbtc[-1] > 0.99):
+                # if bid amount is more than the amount of eth available, sell all eth
                 if (eth - ethReserved < bid_amount):
                     # execute trade
                     logger(fname, 'selling all eth')
@@ -174,21 +179,22 @@ def e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc):
                     if (order.status_code == 200):
                         order = order.json()
                         temp = ['False', 0, time.time(), float(order['original_amount']), float(order['price']),
-                                         int(order['order_id']), 0, 0]
-                        # [confirmation 0, reserved btc 1, time 2, amount 3, rate 4, id 5, delete 6 , spare 7]
-                        e2bRecordBear = addrow(e2bRecordBear, temp)
+                                         int(order['order_id']), 'False']
+                        # [confirmation 0, reserved btc 1, time 2, amount 3, rate 4, id 5, delete 6]
+                        e2bRecordBear = addRow(e2bRecordBear, temp)
                     else:
                         logger(fname, 'e2b bear order failed')
                         logger(fname, order)
+                # if bid amount is less than the available eth, sell some eth
                 else:
                     logger(fname, 'selling some eth')
                     order = Gemcon.newOrder(format(bid_amount, '.6f'), format(bid_rate, '.5f'), 'sell', None, 'ethbtc')
                     if (order.status_code == 200):
                         order = order.json()
                         temp = ['False', 0, time.time(), float(order['original_amount']), float(order['price']),
-                                         int(order['order_id']), 0, 0]
-                        # [confirmation 0, reserved btc 1, time 2, amount 3, rate 4, id 5, delete 6, spare 7]
-                        e2bRecordBear = addrow(e2bRecordBear, temp)
+                                         int(order['order_id']), 0, 'False']
+                        # [confirmation 0, reserved btc 1, time 2, amount 3, rate 4, id 5, delete 6]
+                        e2bRecordBear = addRow(e2bRecordBear, temp)
                     else:
                         logger(fname, 'e2b bear order failed')
                         logger(fname, order)
@@ -201,43 +207,54 @@ def e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc):
 
 def e2bConfirmCancelOrders(fname, timeLimit):
     global e2bRecordBear
+    global fee
 
     for i in range(0, len(e2bRecordBear)):
+        # begin checking all unconfirmed orders
         if (e2bRecordBear["Confirmation"][i] == 'False'):
-            temp = Gemcon.orderStatus(e2bRecordBear['ID'][0])
+            temp = Gemcon.orderStatus(e2bRecordBear['ID'][i])
             if (temp.status_code == 200):
                 temp = temp.json()
-                logger(fname, temp)
-                logger(fname, time.time() - int(temp['timestamp']))
+                # if order was fully unfilled and canceled, mark it for deletion from record
                 if (temp['is_live'] == False and temp['is_cancelled'] == True and temp['executed_amount'] == '0'):
                     e2bRecordBear['Delete'][i] = 'True'
+                # if order has been filled, update the record
                 if (temp['is_live'] == False and temp['is_cancelled'] == False):
                     e2bRecordBear["Confirmation"][i] = 'True'
                     e2bRecordBear["Rate"][i] = float(temp['avg_execution_price'])
-                    e2bRecordBear["Reserved BTC"][i] = e2bRecordBear[i][3] * e2bRecordBear[i][4] * (1 - fee)
+                    e2bRecordBear["Reserved BTC"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
                     logger(fname, 'filled e2b bear trade has been confirmed')
+                # if order is still live and not marked for cancellation begin more checks on order
                 if (temp['is_live'] == True and temp['is_cancelled'] == False):
+                    # check to see if order has been unfilled for too long
                     if (time.time() - int(temp['timestamp']) > timeLimit):
-                        if (Gemcon.cancelOrder(e2bRecordBear[i][5]).status_code == 200):
-                            temp = Gemcon.orderStatus(e2bRecordBear[i][5])
+                        # cancel orders that have been unfilled for too long
+                        if (Gemcon.cancelOrder(e2bRecordBear['ID'][i]).status_code == 200):
+                            temp = Gemcon.orderStatus(e2bRecordBear['ID'][i])
                             if (temp.status_code == 200):
                                 temp = temp.json()
+                                # if order was completely unfilled, just mark it for deletion from record
                                 if (float(temp['executed_amount']) == 0):
-                                    e2bRecordBear[i][6] = 1
-                                    logger(fname, 'canceled bammer order')
+                                    e2bRecordBear['Delete'][i] = 'True'
+                                    logger(fname, 'canceled fully unfilled order')
+                                # if order was partially filled, update the record
                                 else:
-                                    e2bRecordBear[i][3] = float(temp['executed_amount'])
-                                    e2bRecordBear[i][0] = 1
-                                    e2bRecordBear[i][1] = e2bRecordBear[i][3] * e2bRecordBear[i][4] * (1 - fee)
+                                    e2bRecordBear['Amount'][i] = float(temp['executed_amount'])
+                                    e2bRecordBear['Confirmed'][i] = 'True'
+                                    e2bRecordBear["Reserved BTC"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
                                     logger(fname, 'canceled partially filled e2b bear order')
                             else:
                                 e2bRecordBear[i][0] = 2
                                 logger(fname, 'e2b bear order status (2nd round) failed')
+                        # if canceling timed out order fails, reserve full amount of btc just in case
                         else:
-                            logger(fname, 'canceling partial b2e bear order failed')
-                            e2bRecordBear[i][1] = e2bRecordBear[i][3] * e2bRecordBear[i][4] * (1 - fee)
+                            logger(fname, 'canceling timed out b2e bear order failed')
+                            e2bRecordBear["Reserved BTC"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
             else:
+                # if checking order status fails do nothing
                 logger(fname, 'e2b bear order status failed')
+
+            """
             if (e2bRecordBear[i][0] == 2):
                 temp = Gemcon.orderStatus(e2bRecordBear[i][5])
                 if (temp.status_code == 200):
@@ -252,7 +269,9 @@ def e2bConfirmCancelOrders(fname, timeLimit):
                         logger(fname, 'canceled partially filled e2b bear order')
                 else:
                     logger(fname, 'e2b bear order status failed')
-    e2bRecordBear = e2bRecordBear[e2bRecordBear[:, 6] == 0]
+            """
+
+    e2bRecordBear = e2bRecordBear[e2bRecordBear.Delete != 'True']
 
 
 def b2eBearTradeExecute(fname, ethbtc, minuteResults, tradeTimeArray):
