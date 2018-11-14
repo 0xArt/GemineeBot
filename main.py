@@ -279,27 +279,25 @@ def b2eBearTradeExecute(fname, ethbtc, minuteResults, tradeTimeArray):
     global b2eRecordBear
 
     for i in range(0, len(e2bRecordBear)):
-        b2e = Algo.btc2eth_signal_with_growth_bear(fname, ethbtc, e2bRecordBear[i][3],
-                                                   e2bRecordBear[i][4], time.time() - e2bRecordBear[i][2],
-                                                   minuteResults, tradeTimeArray)
-        if (e2bRecordBear[i][0] == 1 and b2e[0] == 1):
-            logger(fname, 'btc 2 eth bear signal')
-            # swap back to eth
-            order = Gemcon.newOrder(format(e2bRecordBear[i][3], '.6f'), format(ethbtc[-1], '.5f'), 'buy', None,
-                                    'ethbtc')
-            if (order.status_code == 200):
-                order = order.json()
-                logger(fname, order)
-                temp = np.array(
-                    [0, b2e[1], time.time(), float(order['original_amount']), float(order['price']),
-                     int(order['order_id']), 0,
-                     e2bRecordBear[i][2]])
-                # [confirmation 0,  rn 1, time 2, amount 3, rate 4, id 5, delete 6,  pair time 7]
-                b2eRecordBear = np.vstack((b2eRecordBear, temp))
-                e2bRecordBear[i][6] = 1
-                total = float(e2bRecordBear[i][3]) * float(ethbtc[-1]) * (1 - fee)
-            else:
-                logger(fname, 'b2e bear trade failed')
+        # if e2b order is confirmed, check for trade back signal
+        if(e2bRecordBear['Confirmation'][i] == 'True'):
+            # check for signal
+            b2e = Algo.btc2ethSignalWithGrowthBear(fname, ethbtc, e2bRecordBear['Amount'][i],
+                                                       e2bRecordBear['Rate'][i], time.time() - e2bRecordBear['Time'][i],
+                                                       minuteResults, tradeTimeArray)
+            if (b2e):
+                logger(fname, 'btc 2 eth bear signal')
+                # swap back to eth
+                order = Gemcon.newOrder(format(e2bRecordBear['Amount'][i], '.6f'), format(ethbtc[-1], '.5f'), 'buy', None, 'ethbtc')
+                if (order.status_code == 200):
+                    order = order.json()
+                    logger(fname, order)
+                    temp = [0, b2e[1], time.time(), float(order['original_amount']), float(order['price']), int(order['order_id']), 0, e2bRecordBear['Time'][i]]
+                    # [confirmation 0,  rn 1, time 2, amount 3, rate 4, id 5, delete 6,  pair time 7]
+                    b2eRecordBear = np.vstack((b2eRecordBear, temp))
+                    e2bRecordBear['Delete'][i] = 'True'
+                else:
+                    logger(fname, 'b2e bear trade failed')
 
 
 def b2eConfirmCancelUpdateOrders(fname):
@@ -307,65 +305,65 @@ def b2eConfirmCancelUpdateOrders(fname):
     global graveyardRecordBear
 
     for i in range(0, len(b2eRecordBear)):
-        if (int(b2eRecordBear[i][5]) != 0 and int(b2eRecordBear[i][5]) != 2):
-            temp = Gemcon.orderStatus(b2eRecordBear[i][5])
-            if (temp.status_code == 200):
-                temp = temp.json()
-                if (temp['is_live'] == False and temp['is_cancelled'] == False):
-                    b2eRecordBear[i][0] = 1
-                    b2eRecordBear[i][6] = 1
-                    b2eRecordBear[i][1] = 1
-                    tt_bear = np.roll(tt_bear, -1)
-                    tt_bear[-1] = time.time() - b2eRecordBear[i][7]
-                    logger(fname, 'filled b2e bear trade has been confirmed')
-                if (temp['is_live'] == True and temp['is_cancelled'] == False):
-                    b2eRecordBear[i][0] = 1
-                    logger(fname, 'b2e bear trade has been confirmed')
-                if (int(b2eRecordBear[i][0]) == 1 and int(b2eRecordBear[i][6]) == 0):
-                    rate = Algo.rate_linear_growth(fname, b2eRecordBear[i][1], time.time() - b2eRecordBear[i][7],
-                                                   tt_bear_mean, tt_bear_mean + tt_bear_std, ema5_3m, ema10_3m, ethbtc)
-                    if (rate != b2eRecordBear[i][4]):
-                        if ((Gemcon.cancelOrder(b2eRecordBear[i][5]).status_code) == 200):
-                            logger(fname, 'canceled b2e bear trade for new rate')
-                            temp = Gemcon.orderStatus(b2eRecordBear[i][5])
-                            if (temp.status_code == 200):
-                                temp = temp.json()
-                                logger(fname, temp)
-                                if (float(temp['executed_amount']) == 0):
-                                    order = Gemcon.newOrder(format(b2eRecordBear[i][3], '.6f'), format(rate, '.5f'),
-                                                            'buy', None, 'ethbtc')
-                                    logger(fname, order.json())
-                                    b2eRecordBear[i][6] = 1
-                                else:
-                                    order = Gemcon.newOrder(temp['remaining_amount'], format(rate, '.5f'), 'buy', None,
-                                                            'ethbtc')
-                                    logger(fname, order.json())
-                                    b2eRecordBear[i][6] = 1
-                                if (order.status_code == 200):
-                                    order = order.json()
-                                    logger(fname, order)
-                                    temp = np.array(
-                                        [0, b2eRecordBear[i][1], b2eRecordBear[i][2], b2eRecordBear[i][3], rate,
-                                         int(order['order_id']), 0, b2eRecordBear[i][7]])
-                                    b2eRecordBear = np.vstack((b2eRecordBear, temp))
-                                else:
-                                    logger(fname, order.json())
-                                    logger(fname, 'placing new rate order failed')
-                                    temp = np.array(
-                                        [0, b2eRecordBear[i][1], b2eRecordBear[i][2], b2eRecordBear[i][3], rate,
-                                         int(temp['order_id']), 0, b2eRecordBear[i][7]])
-                                    graveyardRecordBear = np.vstack((graveyardRecordBear, temp))
-                            else:
-                                b2eRecordBear[i][0] = 2
-                                temp = np.array(b2eRecordBear[i])
-                                graveyardRecordBear = np.vstack((graveyardRecordBear, temp))
+        temp = Gemcon.orderStatus(b2eRecordBear[i][5])
+        if (temp.status_code == 200):
+            temp = temp.json()
+            if (temp['is_live'] == False and temp['is_cancelled'] == False):
+                b2eRecordBear['Confirmation'][i] = 'True'
+                b2eRecordBear['Delete'][i] = 'True'
+                #b2eRecordBear[i][1] = 1
+                tt_bear = np.roll(tt_bear, -1)
+                tt_bear[-1] = time.time() - b2eRecordBear['Pair Time'][i]
+                logger(fname, 'filled b2e bear trade has been confirmed')
+            if (temp['is_live'] == True and temp['is_cancelled'] == False):
+                b2eRecordBear[i][0] = 1
+                logger(fname, 'b2e bear trade has been confirmed')
+            if (int(b2eRecordBear[i][0]) == 1 and int(b2eRecordBear[i][6]) == 0):
+                rate = Algo.rate_linear_growth(fname, b2eRecordBear[i][1], time.time() - b2eRecordBear[i][7],
+                                               tt_bear_mean, tt_bear_mean + tt_bear_std, ema5_3m, ema10_3m, ethbtc)
+                if (rate != b2eRecordBear[i][4]):
+                    if ((Gemcon.cancelOrder(b2eRecordBear[i][5]).status_code) == 200):
+                        logger(fname, 'canceled b2e bear trade for new rate')
+                        temp = Gemcon.orderStatus(b2eRecordBear[i][5])
+                        if (temp.status_code == 200):
+                            temp = temp.json()
+                            logger(fname, temp)
+                            if (float(temp['executed_amount']) == 0):
+                                order = Gemcon.newOrder(format(b2eRecordBear[i][3], '.6f'), format(rate, '.5f'),
+                                                        'buy', None, 'ethbtc')
+                                logger(fname, order.json())
                                 b2eRecordBear[i][6] = 1
-                                logger(fname, 'b2e bear order status failed after new rate')
+                            else:
+                                order = Gemcon.newOrder(temp['remaining_amount'], format(rate, '.5f'), 'buy', None,
+                                                        'ethbtc')
+                                logger(fname, order.json())
+                                b2eRecordBear[i][6] = 1
+                            if (order.status_code == 200):
+                                order = order.json()
+                                logger(fname, order)
+                                temp = np.array(
+                                    [0, b2eRecordBear[i][1], b2eRecordBear[i][2], b2eRecordBear[i][3], rate,
+                                     int(order['order_id']), 0, b2eRecordBear[i][7]])
+                                b2eRecordBear = np.vstack((b2eRecordBear, temp))
+                            else:
+                                logger(fname, order.json())
+                                logger(fname, 'placing new rate order failed')
+                                temp = np.array(
+                                    [0, b2eRecordBear[i][1], b2eRecordBear[i][2], b2eRecordBear[i][3], rate,
+                                     int(temp['order_id']), 0, b2eRecordBear[i][7]])
+                                graveyardRecordBear = np.vstack((graveyardRecordBear, temp))
                         else:
-                            logger(fname, 'canceling b2e bear record for new rate failed')
-            else:
-                logger(fname, 'b2e record bear order status failed')
+                            b2eRecordBear[i][0] = 2
+                            temp = np.array(b2eRecordBear[i])
+                            graveyardRecordBear = np.vstack((graveyardRecordBear, temp))
+                            b2eRecordBear[i][6] = 1
+                            logger(fname, 'b2e bear order status failed after new rate')
+                    else:
+                        logger(fname, 'canceling b2e bear record for new rate failed')
+        else:
+            logger(fname, 'b2e record bear order status failed')
 
+    b2eRecordBear = b2eRecordBear[b2eRecordBear.Delete != 'True']
 
 def geminiEthbtc(csvfile):
     csv_writer = csv.writer(csvfile)
@@ -489,7 +487,6 @@ def geminiEthbtc(csvfile):
 
             b2eConfirmCancelUpdateOrders(fname)
 
-            b2eRecordBear = b2eRecordBear[b2eRecordBear[:, 6] == 0]
 
             for i in range(0, len(graveyardRecordBear)):
                 if (graveyardRecordBear[i][3] != 0 and graveyardRecordBear[i][0] == 0):

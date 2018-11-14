@@ -70,13 +70,13 @@ class TradeAlgo():
             return rate
 
 
-    def eth2btc_signal_15m_bear(self, fname, ethbtc, minResults, hourResults) -> bool:
-        ema5 = minResults.loc[:, 'ema5']
-        ema10 = minResults.loc[:, 'ema10']
-        diMinus = minResults.loc[:, 'di-']
-        diPlus = minResults.loc[:, 'di+']
-        w14m = minResults.loc[:, 'w14']
-        adx = minResults.loc[:, 'adx']
+    def eth2btc_signal_15m_bear(self, fname, ethbtc, minuteResults, hourResults) -> bool:
+        ema5 = minuteResults.loc[:, 'ema5']
+        ema10 = minuteResults.loc[:, 'ema10']
+        diMinus = minuteResults.loc[:, 'di-']
+        diPlus = minuteResults.loc[:, 'di+']
+        w14m = minuteResults.loc[:, 'w14']
+        adx = minuteResults.loc[:, 'adx']
         w14h = hourResults.loc[:, 'w14']
         self.logger(fname, 'eth btc is: ' + str(ethbtc[-1]))
         pdif = (diMinus - diPlus) / (diPlus)
@@ -87,19 +87,28 @@ class TradeAlgo():
             # print("eth2btc signal false")
             return False
 
-    def btc2eth_signal_with_growth_bear(self, fname, ethbtc, ema5, ema10, amount, ethbtc_cr, past_time, ema5_2, ema10_2, start, end) -> np.array:
-        rn = 0
+
+    def rateNeededBear(self, amount, ethbtc) -> float:
         sig = 0
         fee = 0.0025
-        btc = amount * ethbtc_cr - amount * ethbtc_cr * fee
+        btc = amount * ethbtc - amount * ethbtc * fee
         btc = btc - btc * fee
-        if (amount != 0):
-            rn = (btc / amount) - 0.00001
-            rn = self.roundDown(rn, 5)
-            rate2 = self.rate_linear_growth(fname, rn, past_time, start, end, ema5_2, ema10_2, ethbtc)
-            if( ((ema5>ema10) and (ethbtc[-1]<rn)) or ((ethbtc_cr-ethbtc[-1])>6e-4) or (ethbtc[-1]<=rate2) ):
-                sig = 1
-        return np.array([sig, rn])
+        rn = (btc / amount) - 0.00001
+        rn = self.roundDown(rn, 5)
+        return rn
+
+    def btc2ethSignalWithGrowthBear(self, fname, ethbtc, amount, rate, pastTime, minuteResults, tradeTimeArray) -> bool:
+        ema5 = minuteResults.loc[:, 'ema5']
+        ema10 = minuteResults.loc[:, 'ema10']
+        sig = 0
+        fee = 0.0025
+        btc = amount * ethbtc - amount * ethbtc * fee
+        btc = btc - btc * fee
+        rn = self.rateNeededBear(amount, ethbtc)
+        #rate2 = self.rate_linear_growth(fname, rn, pastTime, start, end, ema5_2, ema10_2, ethbtc)
+        if( ((ema5>ema10) and (ethbtc[-1]<rn)) or ((ethbtc-ethbtc[-1])>6e-4)):
+            return True;
+        return False;
 
 
     def btc2eth_signal_15m_bull(self, fname, ethbtc, minResults, hourResults) -> bool:
