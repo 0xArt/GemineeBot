@@ -300,7 +300,7 @@ def b2eBearTradeExecute(fname, ethbtc, minuteResults, tradeTimeArray):
                     logger(fname, 'b2e bear trade failed')
 
 
-def b2eConfirmCancelUpdateOrders(fname):
+def b2eConfirmCancelUpdateOrders(fname, ethbtc, minute3Results, timeArray):
     global b2eRecordBear
     global graveyardRecordBear
 
@@ -316,42 +316,43 @@ def b2eConfirmCancelUpdateOrders(fname):
                 tt_bear[-1] = time.time() - b2eRecordBear['Pair Time'][i]
                 logger(fname, 'filled b2e bear trade has been confirmed')
             if (temp['is_live'] == True and temp['is_cancelled'] == False):
-                b2eRecordBear[i][0] = 1
+                b2eRecordBear['Confirmation'][i] = 'True'
                 logger(fname, 'b2e bear trade has been confirmed')
-            if (int(b2eRecordBear[i][0]) == 1 and int(b2eRecordBear[i][6]) == 0):
+            if (b2eRecordBear['Confirmation'][i] == 'True' and b2eRecordBear['Deletion'][i] == 'False'):
+                '''
                 rate = Algo.rate_linear_growth(fname, b2eRecordBear[i][1], time.time() - b2eRecordBear[i][7],
                                                tt_bear_mean, tt_bear_mean + tt_bear_std, ema5_3m, ema10_3m, ethbtc)
-                if (rate != b2eRecordBear[i][4]):
-                    if ((Gemcon.cancelOrder(b2eRecordBear[i][5]).status_code) == 200):
+               '''
+                rate = Algo.rateLinearGrowth(fname, b2eRecordBear['Rate Needed'][i], time.time() - b2eRecordBear['Pair Time'][i], timeArray, minute3Results, ethbtc)
+                if (rate != float(b2eRecordBear['Rate Needed'][i])):
+                    if ((Gemcon.cancelOrder(b2eRecordBear['ID'][i])).status_code == 200):
                         logger(fname, 'canceled b2e bear trade for new rate')
-                        temp = Gemcon.orderStatus(b2eRecordBear[i][5])
+                        temp = Gemcon.orderStatus(b2eRecordBear['ID'][i])
                         if (temp.status_code == 200):
                             temp = temp.json()
                             logger(fname, temp)
                             if (float(temp['executed_amount']) == 0):
-                                order = Gemcon.newOrder(format(b2eRecordBear[i][3], '.6f'), format(rate, '.5f'),
+                                order = Gemcon.newOrder(format(b2eRecordBear['Amount'][i], '.6f'), format(rate, '.5f'),
                                                         'buy', None, 'ethbtc')
                                 logger(fname, order.json())
-                                b2eRecordBear[i][6] = 1
+                                b2eRecordBear['Delete'][i] = 'True'
                             else:
                                 order = Gemcon.newOrder(temp['remaining_amount'], format(rate, '.5f'), 'buy', None,
                                                         'ethbtc')
                                 logger(fname, order.json())
-                                b2eRecordBear[i][6] = 1
+                                b2eRecordBear['Delete'][i] = 'True'
                             if (order.status_code == 200):
                                 order = order.json()
                                 logger(fname, order)
-                                temp = np.array(
-                                    [0, b2eRecordBear[i][1], b2eRecordBear[i][2], b2eRecordBear[i][3], rate,
-                                     int(order['order_id']), 0, b2eRecordBear[i][7]])
-                                b2eRecordBear = np.vstack((b2eRecordBear, temp))
+                                temp = [0, b2eRecordBear['Rate Needed'][i], b2eRecordBear['Time'][i], b2eRecordBear['Amount'][i], rate,
+                                     int(order['order_id']), 'False', b2eRecordBear['Pair Time'][i]]
+                                b2eRecordBear = addRow(b2eRecordBear, temp)
                             else:
                                 logger(fname, order.json())
                                 logger(fname, 'placing new rate order failed')
-                                temp = np.array(
-                                    [0, b2eRecordBear[i][1], b2eRecordBear[i][2], b2eRecordBear[i][3], rate,
-                                     int(temp['order_id']), 0, b2eRecordBear[i][7]])
-                                graveyardRecordBear = np.vstack((graveyardRecordBear, temp))
+                                temp = [0, b2eRecordBear['Rate Needed'][i], b2eRecordBear['Time'][i], b2eRecordBear['Amount'][i], rate,
+                                     int(order['order_id']), 'False', b2eRecordBear['Pair Time'][i]]
+                                graveyardRecordBear = addRow(graveyardRecordBear, temp)
                         else:
                             b2eRecordBear[i][0] = 2
                             temp = np.array(b2eRecordBear[i])

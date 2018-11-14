@@ -45,6 +45,34 @@ class TradeAlgo():
             self.logger(fname, 'b2e bear rn is: ' + str(rn))
             return rate
 
+    def rateLinearGrowth(self, fname, rn, past_time, timeArray, minute3Results, ethbtc) -> float:
+        ema5 = minute3Results.loc[:, 'ema5']
+        ema10 = minute3Results.loc[:, 'ema10']
+        start = timeArray[0]
+        end = timeArray[1]
+        min = rn - (6e-4)
+        rate = min
+        self.logger(fname, 'past time for GROWTH is: ' + str(past_time))
+        self.logger(fname, 'start is: ' + str(start))
+        self.logger(fname, 'end is: ' + str(end))
+        if (past_time >= start and past_time < end):
+            m = (rn - min) / ((end - start))
+            rate = m * (past_time - start) + min
+            rate = self.roundDown(rate, 5)
+        if (past_time >= end):
+            rate = rn
+        if(ema5 / ema10 >= 1.03):
+            rate = rn
+            self.logger(fname, 'ema3 clause tripped')
+        if( ethbtc[-1] < rate):
+            self.logger(fname, 'b2e bear rate2 is: ' + str(ethbtc[-1]))
+            self.logger(fname, 'b2e bear rn is: ' + str(rn))
+            return self.roundDown(ethbtc[-1], 5)
+        else:
+            self.logger(fname, 'b2e bear rate2 is: ' + str(rate))
+            self.logger(fname, 'b2e bear rn is: ' + str(rn))
+            return rate
+
     def rate_linear_decay(self, fname, rn, past_time, start, end, ema5, ema10, ethbtc) -> float:
         max = rn + (6e-4)
         rate = max
