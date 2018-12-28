@@ -240,11 +240,11 @@ def e2bConfirmCancelOrders(fname, timeLimit):
                                 # if order was partially filled, update the record
                                 else:
                                     e2bRecordBear['Amount'][i] = float(temp['executed_amount'])
-                                    e2bRecordBear['Confirmed'][i] = 'True'
+                                    e2bRecordBear['Confirmation'][i] = 'True'
                                     e2bRecordBear["Reserved BTC"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
                                     logger(fname, 'canceled partially filled e2b bear order')
                             else:
-                                e2bRecordBear[i][0] = 2
+                                e2bRecordBear["Confirmation"][i] = "Fail"
                                 logger(fname, 'e2b bear order status (2nd round) failed')
                         # if canceling timed out order fails, reserve full amount of btc just in case
                         else:
@@ -254,22 +254,22 @@ def e2bConfirmCancelOrders(fname, timeLimit):
                 # if checking order status fails do nothing
                 logger(fname, 'e2b bear order status failed')
 
-            """
-            if (e2bRecordBear[i][0] == 2):
-                temp = Gemcon.orderStatus(e2bRecordBear[i][5])
+
+            if (e2bRecordBear["Confirmation"][i] == "Fail"):
+                temp = Gemcon.orderStatus(e2bRecordBear["ID"][i])
                 if (temp.status_code == 200):
                     temp = temp.json()
                     if (float(temp['executed_amount']) == 0):
-                        e2bRecordBear[i][6] = 1
+                        e2bRecordBear["Delete"][i] = "True"
                         logger(fname, 'canceled bammer order')
                     else:
-                        e2bRecordBear[i][3] = float(temp['executed_amount'])
-                        e2bRecordBear[i][0] = 1
-                        e2bRecordBear[i][1] = e2bRecordBear[i][3] * e2bRecordBear[i][4] * (1 - fee)
+                        e2bRecordBear["Amount"][i] = float(temp['executed_amount'])
+                        e2bRecordBear["Confirmation"][i] = "True"
+                        e2bRecordBear["Reserved BTC"][i] = e2bRecordBear["Amount"][i] * e2bRecordBear["Rate"][i] * (1 - fee)
                         logger(fname, 'canceled partially filled e2b bear order')
                 else:
                     logger(fname, 'e2b bear order status failed')
-            """
+
 
     e2bRecordBear = e2bRecordBear[e2bRecordBear.Delete != 'True']
 
@@ -354,10 +354,10 @@ def b2eConfirmCancelUpdateOrders(fname, ethbtc, minute3Results, timeArray):
                                      int(order['order_id']), 'False', b2eRecordBear['Pair Time'][i]]
                                 graveyardRecordBear = addRow(graveyardRecordBear, temp)
                         else:
-                            b2eRecordBear[i][0] = 2
-                            temp = np.array(b2eRecordBear[i])
-                            graveyardRecordBear = np.vstack((graveyardRecordBear, temp))
-                            b2eRecordBear[i][6] = 1
+                            b2eRecordBear["Confirmation"][i] = "Fail"
+                            temp = b2eRecordBear.iloc[i, :]
+                            graveyardRecordBear = addRow(graveyardRecordBear, temp)
+                            b2eRecordBear["Delete"][i] = "True"
                             logger(fname, 'b2e bear order status failed after new rate')
                     else:
                         logger(fname, 'canceling b2e bear record for new rate failed')
