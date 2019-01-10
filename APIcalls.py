@@ -332,9 +332,9 @@ class Gemini(object):
         Arguments:
         params -- a dictionary of parameters
         """
-        jsonparams = json.dumps(params)
+        jsonparams = json.dumps(params).encode('utf-8')
         payload = base64.b64encode(jsonparams)
-        signature = hmac.new(self.secret_key, payload,
+        signature = hmac.new(self.secret_key.encode('utf-8'), payload,
                              hashlib.sha384).hexdigest()
 
         return {'X-GEMINI-APIKEY': self.api_key,

@@ -15,13 +15,6 @@ CC = APIcalls.CryptoCompare()
 
 Gemcon = Gemini()
 
-HEADER = [
-    'TIME', 'TIMESTAMP', 'ethbtc', 'OPEN', 'CLOSE', 'HIGH', 'LOW', 'VFROM', 'VTO', 'VWAP',
-    'WILLIAMS %R 14 Hour', 'WILLIAMS %R 14 Min', 'EMA 5', 'EMA 10',
-    'DEMA 5min', 'DEMA 10min', 'MACD', 'Signal Line', 'Signal Line Slope', 'RSI', 'ULTIMATE OSCILLATOR',
-    'ADX', 'STOCH FAST K', 'STOCH FAST D', 'AROON', 'DI +', 'DI -', 'ETH', 'BTC', 'e2b signal', 'vwap cross',
-    'EMA 5 3min', 'EMA 10 3min']
-
 
 def vwap(size):
     data = Gemcon.pastOrders()
@@ -39,7 +32,7 @@ def vwap(size):
 
 def geminiLastPrice():
     tickers = Gemcon.ticker('ethbtc')
-    d = json.loads(tickers)
+    d = tickers.json()
     value = d['last']
     value = float(value)
     return value
@@ -107,6 +100,14 @@ def roundDown(n, d):
     return np.floor(n * d) / d
 
 
+def checkIfCsvEmpty(csvfile):
+    reader_file = csv.reader(csvfile)
+    value = len(list(reader_file))
+    if(value  == 0):
+        return True
+    return False
+
+
 def logger(fname, text, printer=True):
     if (loggingEnable == 'true'):
         f = open(fname, 'a')
@@ -136,11 +137,12 @@ def restoreRecord(target, record):
             return record
 
 def addRow(df, data):
-    df.loc[-1] = data  # adding a row
-    df.index = df.index + 1  # shifting index
-    df = df.sort_index()  # sorting by index
-    df = df[::-1].reset_index(drop=True)
+    df.loc[len(df)] = data
     return df
+
+def deleteRows(df):
+    return df[df.Delete != 'True'].reset_index(drop=True)
+
 
 def e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc):
     global fee
@@ -148,28 +150,31 @@ def e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc):
     eth = 0
 
     # check and update balance
-    try:
-        balance = Gemcon.balances()
-        if (balance.status_code == 200):
-            balance = balance.json()
-            # logger(fname,balance)
-            for i in range(0, len(balance)):
-                if (balance[i]['currency'] == 'ETH'):
-                    eth = float(balance[i]['available']) + ethOffset
-                    eth = roundDown(eth, 6)
-    except Exception as e:
-        logger(fname, 'balance request try fail')
-        logger(fname, e)
+
+    balance = Gemcon.balances()
+    print("BALANCE")
+    print(balance)
+    if (balance.status_code == 200):
+        balance = balance.json()
+
+        logger(fname,balance)
+        for i in range(0, len(balance)):
+            if (balance[i]['currency'] == 'ETH'):
+                eth = float(balance[i]['available']) + ethOffset
+                eth = roundDown(eth, 6)
+    else:
+        eth = 0
+
 
     # if we have enough eth
     if (eth - ethReserved > 0.001):
-        market = json.loads(Gemcon.book('ethbtc'))
+        market = Gemcon.book('ethbtc').json()
         # iteratively scan order book
         for i in range(0, len(market['bids'])):
             bid_rate = np.round(float(market['bids'][i]['price']), 5)
             bid_amount = roundDown(float(market['bids'][i]['amount']), 6)
             # if order book is close to our target
-            if (bid_rate / ethbtc[-1] > 0.99):
+            if (bid_rate / ethbtc > 0.99):
                 # if bid amount is more than the amount of eth available, sell all eth
                 if (eth - ethReserved < bid_amount):
                     # execute trade
@@ -192,8 +197,9 @@ def e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc):
                     if (order.status_code == 200):
                         order = order.json()
                         temp = ['False', 0, time.time(), float(order['original_amount']), float(order['price']),
-                                         int(order['order_id']), 0, 'False']
+                                         int(order['order_id']), 'False']
                         # [confirmation 0, reserved btc 1, time 2, amount 3, rate 4, id 5, delete 6]
+                        print(e2bRecordBear)
                         e2bRecordBear = addRow(e2bRecordBear, temp)
                     else:
                         logger(fname, 'e2b bear order failed')
@@ -222,7 +228,7 @@ def e2bConfirmCancelOrders(fname, timeLimit):
                 if (temp['is_live'] == False and temp['is_cancelled'] == False):
                     e2bRecordBear["Confirmation"][i] = 'True'
                     e2bRecordBear["Rate"][i] = float(temp['avg_execution_price'])
-                    e2bRecordBear["Reserved BTC"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
+                    e2bRecordBear["Reserved"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
                     logger(fname, 'filled e2b bear trade has been confirmed')
                 # if order is still live and not marked for cancellation begin more checks on order
                 if (temp['is_live'] == True and temp['is_cancelled'] == False):
@@ -240,8 +246,8 @@ def e2bConfirmCancelOrders(fname, timeLimit):
                                 # if order was partially filled, update the record
                                 else:
                                     e2bRecordBear['Amount'][i] = float(temp['executed_amount'])
-                                    e2bRecordBear['Confirmation'][i] = 'True'
-                                    e2bRecordBear["Reserved BTC"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
+                                    e2bRecordBear['Delete'][i] = 'True'
+                                    e2bRecordBear["Reserved"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
                                     logger(fname, 'canceled partially filled e2b bear order')
                             else:
                                 e2bRecordBear["Confirmation"][i] = "Fail"
@@ -249,7 +255,7 @@ def e2bConfirmCancelOrders(fname, timeLimit):
                         # if canceling timed out order fails, reserve full amount of btc just in case
                         else:
                             logger(fname, 'canceling timed out b2e bear order failed')
-                            e2bRecordBear["Reserved BTC"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
+                            e2bRecordBear["Reserved"][i] = e2bRecordBear['Amount'][i] * e2bRecordBear['Rate'][i] * (1 - fee)
             else:
                 # if checking order status fails do nothing
                 logger(fname, 'e2b bear order status failed')
@@ -265,18 +271,20 @@ def e2bConfirmCancelOrders(fname, timeLimit):
                     else:
                         e2bRecordBear["Amount"][i] = float(temp['executed_amount'])
                         e2bRecordBear["Confirmation"][i] = "True"
-                        e2bRecordBear["Reserved BTC"][i] = e2bRecordBear["Amount"][i] * e2bRecordBear["Rate"][i] * (1 - fee)
+                        e2bRecordBear["Reserved"][i] = e2bRecordBear["Amount"][i] * e2bRecordBear["Rate"][i] * (1 - fee)
                         logger(fname, 'canceled partially filled e2b bear order')
                 else:
                     logger(fname, 'e2b bear order status failed')
 
 
-    e2bRecordBear = e2bRecordBear[e2bRecordBear.Delete != 'True']
+    e2bRecordBear = deleteRows(e2bRecordBear)
 
 
-def b2eBearTradeExecute(fname, ethbtc, minuteResults, tradeTimeArray):
+def b2eBearTradeExecute(fname, ethbtc, fastMinuteResults):
     global e2bRecordBear
     global b2eRecordBear
+    global averageBearTradeTime
+    global averageBearTradeTimeStd
 
     for i in range(0, len(e2bRecordBear)):
         # if e2b order is confirmed, check for trade back signal
@@ -284,7 +292,7 @@ def b2eBearTradeExecute(fname, ethbtc, minuteResults, tradeTimeArray):
             # check for signal
             b2e = Algo.btc2ethSignalWithGrowthBear(fname, ethbtc, e2bRecordBear['Amount'][i],
                                                        e2bRecordBear['Rate'][i], time.time() - e2bRecordBear['Time'][i],
-                                                       minuteResults, tradeTimeArray)
+                                                   fastMinuteResults, averageBearTradeTime, averageBearTradeTime + averageBearTradeTimeStd )
             if (b2e):
                 logger(fname, 'btc 2 eth bear signal')
                 # swap back to eth
@@ -292,39 +300,44 @@ def b2eBearTradeExecute(fname, ethbtc, minuteResults, tradeTimeArray):
                 if (order.status_code == 200):
                     order = order.json()
                     logger(fname, order)
-                    temp = [0, b2e[1], time.time(), float(order['original_amount']), float(order['price']), int(order['order_id']), 0, e2bRecordBear['Time'][i]]
+                    temp = ["False", Algo.rateNeededBear(float(order['original_amount']), float(order['price'])), time.time(), float(order['original_amount']), float(order['price']), int(order['order_id']), 0, e2bRecordBear['Time'][i]]
                     # [confirmation 0,  rn 1, time 2, amount 3, rate 4, id 5, delete 6,  pair time 7]
-                    b2eRecordBear = np.vstack((b2eRecordBear, temp))
+                    b2eRecordBear = addRow((b2eRecordBear, temp))
                     e2bRecordBear['Delete'][i] = 'True'
                 else:
                     logger(fname, 'b2e bear trade failed')
 
+    e2bRecordBear = deleteRows(e2bRecordBear)
 
-def b2eConfirmCancelUpdateOrders(fname, ethbtc, minute3Results, timeArray):
+
+
+def b2eConfirmCancelUpdateOrders(fname, ethbtc, fastMinuteResults):
     global b2eRecordBear
     global graveyardRecordBear
+    global tradeTimeBear
+    global averageBearTradeTime
+    global stdBearTradeTime
 
     for i in range(0, len(b2eRecordBear)):
-        temp = Gemcon.orderStatus(b2eRecordBear[i][5])
+        temp = Gemcon.orderStatus(b2eRecordBear["ID"][i])
         if (temp.status_code == 200):
             temp = temp.json()
             if (temp['is_live'] == False and temp['is_cancelled'] == False):
                 b2eRecordBear['Confirmation'][i] = 'True'
                 b2eRecordBear['Delete'][i] = 'True'
-                #b2eRecordBear[i][1] = 1
-                tt_bear = np.roll(tt_bear, -1)
-                tt_bear[-1] = time.time() - b2eRecordBear['Pair Time'][i]
+                tradeTimeBear = np.roll(tradeTimeBear, -1)
+                tradeTimeBear[-1] = time.time() - b2eRecordBear['Pair Time'][i]
                 logger(fname, 'filled b2e bear trade has been confirmed')
             if (temp['is_live'] == True and temp['is_cancelled'] == False):
                 b2eRecordBear['Confirmation'][i] = 'True'
                 logger(fname, 'b2e bear trade has been confirmed')
-            if (b2eRecordBear['Confirmation'][i] == 'True' and b2eRecordBear['Deletion'][i] == 'False'):
+            if (b2eRecordBear['Confirmation'][i] == 'True' and b2eRecordBear['Delete'][i] == 'False'):
                 '''
                 rate = Algo.rate_linear_growth(fname, b2eRecordBear[i][1], time.time() - b2eRecordBear[i][7],
                                                tt_bear_mean, tt_bear_mean + tt_bear_std, ema5_3m, ema10_3m, ethbtc)
                '''
-                rate = Algo.rateLinearGrowth(fname, b2eRecordBear['Rate Needed'][i], time.time() - b2eRecordBear['Pair Time'][i], timeArray, minute3Results, ethbtc)
-                if (rate != float(b2eRecordBear['Rate Needed'][i])):
+                rate = Algo.rateLinearGrowth(fname, b2eRecordBear['Rate'][i], time.time() - b2eRecordBear['Pair Time'][i], averageBearTradeTime, averageBearTradeTime + stdBearTradeTime, fastMinuteResults, ethbtc)
+                if (rate != float(b2eRecordBear['Rate'][i])):
                     if ((Gemcon.cancelOrder(b2eRecordBear['ID'][i])).status_code == 200):
                         logger(fname, 'canceled b2e bear trade for new rate')
                         temp = Gemcon.orderStatus(b2eRecordBear['ID'][i])
@@ -344,13 +357,13 @@ def b2eConfirmCancelUpdateOrders(fname, ethbtc, minute3Results, timeArray):
                             if (order.status_code == 200):
                                 order = order.json()
                                 logger(fname, order)
-                                temp = [0, b2eRecordBear['Rate Needed'][i], b2eRecordBear['Time'][i], b2eRecordBear['Amount'][i], rate,
+                                temp = ["False", b2eRecordBear['Rate Needed'][i], b2eRecordBear['Time'][i], b2eRecordBear['Amount'][i], rate,
                                      int(order['order_id']), 'False', b2eRecordBear['Pair Time'][i]]
                                 b2eRecordBear = addRow(b2eRecordBear, temp)
                             else:
                                 logger(fname, order.json())
                                 logger(fname, 'placing new rate order failed')
-                                temp = [0, b2eRecordBear['Rate Needed'][i], b2eRecordBear['Time'][i], b2eRecordBear['Amount'][i], rate,
+                                temp = ["False", b2eRecordBear['Rate Needed'][i], b2eRecordBear['Time'][i], b2eRecordBear['Amount'][i], rate,
                                      int(order['order_id']), 'False', b2eRecordBear['Pair Time'][i]]
                                 graveyardRecordBear = addRow(graveyardRecordBear, temp)
                         else:
@@ -364,11 +377,329 @@ def b2eConfirmCancelUpdateOrders(fname, ethbtc, minute3Results, timeArray):
         else:
             logger(fname, 'b2e record bear order status failed')
 
-    b2eRecordBear = b2eRecordBear[b2eRecordBear.Delete != 'True']
+    b2eRecordBear = deleteRows(b2eRecordBear)
+
+
+def sweepBearGraveyard(fname, ethbtc, fastMinuteResults):
+    global graveyardRecordBear
+    global b2eRecordBear
+    global averageBearTradeTime
+    global stdBearTradeTime
+
+
+    for i in range(0, len(graveyardRecordBear)):
+        if (graveyardRecordBear['Confirmation'][i] == 'False'):
+            rate = Algo.rateLinearGrowth(fname, graveyardRecordBear['Rate Needed'][i],
+                                         time.time() - graveyardRecordBear['Pair Time'][i], averageBearTradeTime,
+                                         averageBearTradeTime + stdBearTradeTime, fastMinuteResults, ethbtc)
+            order = Gemcon.newOrder(format(graveyardRecordBear["Amount"][i], '.6f'), format(rate, '.5f'), 'buy', None,
+                                    'ethbtc')
+            if (order.status_code == 200):
+                graveyardRecordBear['ID'][i] = int(order.json()['order_id'])
+                b2eRecordBear = addRow(b2eRecordBear, graveyardRecordBear.iloc[[i]])
+                graveyardRecordBear['Delete'][i] = "True"
+                logger(fname, 'graveyard bear order resurrected')
+            else:
+                logger(fname, order.json())
+                logger(fname, 'graveyard bear order failed')
+        if (graveyardRecordBear['Confirmation'][i] == 'Fail'):
+            rate = Algo.rateLinearGrowth(fname, graveyardRecordBear['Rate Needed'][i],
+                                         time.time() - graveyardRecordBear['Pair Time'][i], averageBearTradeTime,
+                                         averageBearTradeTime + stdBearTradeTime, fastMinuteResults, ethbtc)
+            temp = Gemcon.orderStatus(graveyardRecordBear["ID"][i])
+            if (temp.status_code == 200):
+                temp = temp.json()
+                amount = temp['remaining_amount']
+                if (float(temp['executed_amount']) == 0):
+                    order = Gemcon.newOrder(amount, format(rate, ".5f"), "buy", None, "ethbtc")
+                    graveyardRecordBear["Delete"][i] = "True"
+                    logger(fname, order.json())
+                else:
+                    order = Gemcon.newOrder(amount, format(rate, '.5f'), 'buy', None,
+                                            'ethbtc')
+                    logger(fname, order.json())
+                if (order.status_code == 200):
+                    graveyardRecordBear["Delete"][i] = "True"
+                    order = order.json()
+                    temp = ["False", graveyardRecordBear['Rate Needed'][i], graveyardRecordBear['Time'][i], amount, rate, int(order['order_id']), 'False', graveyardRecordBear['Pair Time'][i]]
+                    b2eRecordBear = addRow(b2eRecordBear, temp)
+                    logger(fname, 'graveyard bear [i][0] order resurrected')
+
+                else:
+                    logger(fname, order.json())
+                    logger(fname, 'graveyard bear [i][0] = 2 order failed')
+            else:
+                logger(fname, 'graveyard bear order status failed')
+
+    graveyardRecordBear = deleteRows(graveyardRecordBear)
+
+def b2eBullTradeExecute(fname, btcOffset, ethOffset, btcReserved, ethbtc):
+    global b2eRecordBull
+
+    try:
+        balance = Gemcon.balances()
+        if (balance.status_code == 200):
+            balance = balance.json()
+            for i in range(0, len(balance)):
+                if (balance[i]['currency'] == 'BTC'):
+                    btc = float(
+                        balance[i]['available']) + btcOffset
+                    logger(fname, btc)
+        else:
+            btc = 0
+    except Exception as e:
+        logger(fname, 'balance request try fail')
+        logger(fname, e)
+        btc = 0
+
+    #if we have enought btc
+    if (btc - btcReserved > 0.00001):  # if we have enough btc
+        market = json.loads(Gemcon.book('ethbtc'))
+        # iteratively scan order book
+        for i in range(0, len(market['asks'])):
+            ask_rate = np.round(float(market['asks'][i]['price']), 5)
+            ask_amount = roundDown(float(market['asks'][i]['amount']), 6)
+            # if order book is close to our target
+            if (ask_rate / ethbtc[-1] <= 1.01 and btc - btcReserved > 0.00001):
+                total = np.round((ask_rate * ask_amount * (1 + fee)), 5)
+                if ((btc - btcReserved) < total):
+                    # execute trade
+                    amount = ((btc - btcReserved) * (1 - fee)) / (ask_rate)
+                    amount = roundDown(amount, 6)
+                    logger(fname, 'selling all btc for eth')
+                    try:
+                        order = Gemcon.newOrder(format(amount, '.6f'), format(ask_rate, '.5f'), 'buy',
+                                                None, 'ethbtc')
+                        if (order.status_code == 200):
+                            order = order.json()
+                            temp = ['False', 0, time.time(), float(order['original_amount']), float(order['price']),
+                                    int(order['order_id']), 'False']
+                            # [confirmation 0, reserved 1, time 2, amount 3, rate 4, id 5, delete 6, spare 7]
+                            b2eRecordBull = addRow(b2eRecordBull, temp)
+                        else:
+                            logger(fname, 'b2e order failed')
+                            logger(fname, order)
+                    except Exception as e:
+                        logger(fname, e)
+                        logger(fname, 'b2e order try failed')
+                else:
+                    logger(fname, 'selling some btc for eth')
+                    try:
+                        order = Gemcon.newOrder(format(total, '.6f'), format(ask_rate, '.5f'), 'buy',
+                                                None, 'ethbtc')
+                        if (order.status_code == 200):
+                            order = order.json()
+                            temp = ['False', 0, time.time(), float(order['original_amount']), float(order['price']),
+                                    int(order['order_id']), 'False']
+                            # [confirmation 0, reserved 1, time 2, amount 3, rate 4, id 5, delete 6, spare 7]
+                            b2eRecordBull = addRow(b2eRecordBull, temp)
+                        else:
+                            logger(fname, 'b2e order failed')
+                            logger(fname, order)
+                    except Exception as e:
+                        logger(fname, e)
+                        logger(fname, 'b2e order try failed')
+            else:
+                logger(fname, 'order book not close enough')
+                break
+    else:
+        logger(fname, 'not enough btc')
+
+def b2eConfirmCancelOrders(fname, timeLimit):
+    global b2eRecordBull
+    global fee
+
+    for i in range(0, len(b2eRecordBull)):
+        if (b2eRecordBull["Confirmation"][i] == 'False'):
+            temp = Gemcon.orderStatus(b2eRecordBull['ID'][i])
+            if (temp.status_code == 200):
+                temp = temp.json()
+                logger(fname, temp)
+                logger(fname, time.time() - int(temp['timestamp']))
+                if (temp['is_live'] == False and temp['is_cancelled'] == True and temp[
+                    'executed_amount'] == '0'):
+                    b2eRecordBull['Delete'][i] = 'True'
+                if (temp['is_live'] == False and temp['is_cancelled'] == False):
+                    b2eRecordBull["Confirmation"][i] = 'True'
+                    b2eRecordBull["Reserved"][i] = b2eRecordBull["Amount"][i]
+                    b2eRecordBull["Rate"][i] = float(temp['avg_execution_price'])
+                    logger(fname, 'filled b2e bull trade has been confirmed')
+                if (temp['is_live'] == True and temp['is_cancelled'] == False):
+                    if (time.time() - int(temp['timestamp']) > timeLimit):
+                        if (Gemcon.cancelOrder(b2eRecordBull["ID"][i]).status_code == 200):
+                            temp = Gemcon.orderStatus(b2eRecordBull["ID"][i])
+                            if (temp.status_code == 200):
+                                temp = temp.json()
+                                if (float(temp['executed_amount']) == 0):
+                                    b2eRecordBull["Delete"][i] = "True"
+                                    logger(fname, 'canceled bammer order')
+                                else:
+                                    b2eRecordBull["Amount"][i] = float(temp['executed_amount'])
+                                    b2eRecordBull["Delete"][i] = "True"
+                                    b2eRecordBull["Reserved"][i] = b2eRecordBull["Amount"][i]
+                                    logger(fname, 'canceled partially filled b2e bull order')
+                            else:
+                                b2eRecordBull["Confirmation"][i] = "Fail"
+                                logger(fname, 'b2e bull order status (2nd round) failed')
+                        else:
+                            logger(fname, 'canceling partial b2e bull order failed')
+                            b2eRecordBull["Reserved"][i] = b2eRecordBull["Amount"][i]
+            else:
+                logger(fname, 'b2e bull order status failed')
+
+        if (b2eRecordBull["Confirmation"][i] == 'Fail'):
+            temp = Gemcon.orderStatus(b2eRecordBull["ID"][i])
+            if (temp.status_code == 200):
+                temp = temp.json()
+                if (float(temp['executed_amount']) == 0):
+                    b2eRecordBull["Delete"][i] = "True"
+                    logger(fname, 'canceled bammer order')
+                else:
+                    b2eRecordBull["Amount"][i] = float(temp['executed_amount'])
+                    b2eRecordBull["Confirmation"][i] = "True"
+                    b2eRecordBull["Reserved"][i] = b2eRecordBull["Amount"][i]
+                    logger(fname, 'canceled partially filled b2e bull order')
+
+    b2eRecordBull = deleteRows(b2eRecordBull)
+
+def e2bBullTradeExecute(fname, ethbtc, fastMinuteResults):
+    global b2eRecordBull
+    global e2bRecordBull
+    global averageBullTradeTime
+    global stdBullTradeTime
+
+    for i in range(0, len(b2eRecordBull)):
+        e2b = Algo.eth2btcSignalWithDecayBull(fname, ethbtc, b2eRecordBull['Amount'][i],
+                                     b2eRecordBull['Rate'][i], time.time() - b2eRecordBull['Time'][i],
+                                                   fastMinuteResults, averageBullTradeTime, averageBullTradeTime + stdBullTradeTime )
+        if (e2b):
+            logger(fname, 'eth 2 btc bull signal')
+            order = Gemcon.newOrder(format(b2eRecordBull[i][3], '.6f'), format(ethbtc[-1], '.5f'), 'sell', None,
+                                    'ethbtc')
+            if (order.status_code == 200):
+                order = order.json()
+                temp = ["False", Algo.rateNeededBull(b2eRecordBull['Amount'][i], b2eRecordBull['Rate'][i]), time.time(), float(order['original_amount']), float(order['price']),
+                        int(order['order_id']), "False", b2eRecordBull['Time'][i]]
+                # [confirmation 0,  rn 1, time 2, amount 3, rate 4, id 5, delete 6, pair time 7]
+                e2bRecordBull = addRow(e2bRecordBull, temp)
+                b2eRecordBull["Delete"][i] = "True"
+            else:
+                logger(fname, 'e2b bull trade failed')
+
+    b2eRecordBull = deleteRows(b2eRecordBull)
+
+def e2bConfirmCancelUpdateOrders(fname, ethbtc, fastMinuteResults):
+    global e2bRecordBull
+    global graveyardRecordBull
+    global tradeTimeBull
+    global averageBullTradeTime
+    global stdBullTradeTime
+
+    for i in range(0, len(e2bRecordBull)):
+        temp = Gemcon.orderStatus(e2bRecordBull["ID"][i])
+        if (temp.status_code == 200):
+            temp = temp.json()
+            if (temp['is_live'] == False and temp['is_cancelled'] == False):
+                e2bRecordBull['Confirmation'][i] = 'True'
+                e2bRecordBull['Delete'][i] = 'True'
+                #e2bRecordBull[i][1] = 1 IDK WHAT THIS IS FOR
+                tradeTimeBull = np.roll(tradeTimeBull, -1)
+                tradeTimeBull[-1] = time.time() - e2bRecordBull['Pair Time'][i]
+                logger(fname, 'filled e2b bull trade has been confirmed')
+            if (temp['is_live'] == True and temp['is_cancelled'] == False):
+                e2bRecordBull['Confirmation'][i] = 'True'
+                logger(fname, 'e2b bull trade has been confirmed')
+            if (e2bRecordBull['Confirmation'][i] == 'True' and e2bRecordBull['Delete'][i] == 'False'):
+                rate = Algo.rateLinearDecay(fname, e2bRecordBull['Rate Needed'][i], time.time() - e2bRecordBull['Pair Time'][i], averageBullTradeTime, averageBullTradeTime + stdBullTradeTime, fastMinuteResults, ethbtc)
+                if (rate != float(e2bRecordBull['Rate'][i])):
+                    if ((Gemcon.cancelOrder(e2bRecordBull['ID'][i])).status_code == 200):
+                        temp = Gemcon.orderStatus(e2bRecordBull['ID'][i])
+                        if (temp.status_code == 200):
+                            temp = temp.json()
+                            if (float(temp['executed_amount']) == 0):
+                                order = Gemcon.newOrder(format(e2bRecordBull["Amount"][i], '.6f'),
+                                                        format(rate, '.5f'), 'sell', None, 'ethbtc')
+                                e2bRecordBull["Confirmation"][i] = "True"
+                            else:
+                                order = Gemcon.newOrder(temp['remaining_amount'], format(rate, '.5f'),
+                                                        'sell', None, 'ethbtc')
+                                e2bRecordBull["Delete"][i] = "True"
+                            if (order.status_code == 200):
+                                order = order.json()
+                                temp = ["False", e2bRecordBull['Rate Needed'][i], e2bRecordBull['Time'][i], e2bRecordBull['Amount'][i], rate,
+                                     int(order['order_id']), 'False', e2bRecordBull['Pair Time'][i]]
+                                e2bRecordBull = addRow(e2bRecordBull, temp)
+                            else:
+                                logger(fname, 'placing new rate bull order failed')
+                                temp = ["False", e2bRecordBull['Rate Needed'][i], e2bRecordBull['Time'][i], e2bRecordBull['Amount'][i], rate,
+                                     int(order['order_id']), 'False', e2bRecordBull['Pair Time'][i]]
+                                graveyardRecordBull = addRow(graveyardRecordBull, temp)
+                        else:
+                            e2bRecordBull["Confirmation"][i] = "Fail"
+                            temp = e2bRecordBull.iloc[i, :]
+                            graveyardRecordBull = addRow(graveyardRecordBull, temp)
+                            e2bRecordBull["Delete"][i] = "True"
+                            logger(fname, 'e2b bull order status failed after new rate')
+                    else:
+                        logger(fname, 'canceling e2b bull record for new rate failed')
+        else:
+            logger(fname, 'e2b record bull order status failed')
+
+    e2bRecordBull = deleteRows(e2bRecordBull)
+
+def sweepBullGraveyard(fname, ethbtc, fastMinuteResults):
+    global graveyardRecordBull
+    global e2bRecordBull
+    global averageBullTradeTime
+    global stdBullTradeTime
+
+    for i in range(0, len(graveyardRecordBull)):
+        if (graveyardRecordBull['Confirmation'][i] == 'False'):
+            rate = Algo.rateLinearDecay(fname, graveyardRecordBull['Rate Needed'][i],
+                                         time.time() - graveyardRecordBull['Pair Time'][i], averageBullTradeTime,
+                                        averageBullTradeTime + stdBullTradeTime, fastMinuteResults, ethbtc)
+            order = Gemcon.newOrder(format(graveyardRecordBull["Amount"][i], '.6f'), format(rate, '.5f'), 'sell', None,
+                                    'ethbtc')
+            if (order.status_code == 200):
+                graveyardRecordBull["ID"][i] = int(order.json()['order_id'])
+                e2bRecordBull = addRow(e2bRecordBull, graveyardRecordBull.iloc[[i]])
+                graveyardRecordBull["Delete"][i] = "True"
+                logger(fname, 'graveyard record bull order resurrected')
+            else:
+                logger(fname, order.json())
+                logger(fname, 'graveyard record bull order failed')
+        if (graveyardRecordBull["Confirmation"][i] == "Fail"):
+            rate = Algo.rateLinearDecay(fname, graveyardRecordBull['Rate Needed'][i],
+                                         time.time() - graveyardRecordBull['Pair Time'][i], averageBullTradeTime,
+                                        averageBullTradeTime + stdBullTradeTime, fastMinuteResults, ethbtc)
+            temp = Gemcon.orderStatus(graveyardRecordBull["ID"][i])
+            if (temp.status_code == 200):
+                temp = temp.json()
+                amount = float(temp['remaining_amount'])
+                if (float(temp['executed_amount']) == 0):
+                    order = Gemcon.newOrder(amount, format(rate, '.5f'),
+                                            'sell', None, 'ethbtc')
+                    graveyardRecordBull["Delete"][i] = "True"
+                else:
+                    order = Gemcon.newOrder(amount, format(rate, '.5f'), 'sell', None,
+                                            'ethbtc')
+                if (order.status_code == 200):
+                    graveyardRecordBull["Delete"][i] = "True"
+                    order = order.json()
+                    temp = ["False", graveyardRecordBull['Rate Needed'][i], graveyardRecordBull['Time'][i], amount, rate, int(order['order_id']), 'False', graveyardRecordBull['Pair Time'][i]]
+                    e2bRecordBull = addRow(e2bRecordBull, temp)
+                else:
+                    logger(fname, order.json())
+                    logger(fname, 'graveyard [i][1] = 2 order failed')
+            else:
+                logger(fname, 'graveyard bull order status failed')
+
+        graveyardRecordBull = deleteRows(graveyardRecordBull)
 
 def geminiEthbtc(csvfile):
+# Setup variables
+#######################################################################################################################
     csv_writer = csv.writer(csvfile)
-    csv_writer.writerow(HEADER)
     print('Starting Gemini Bot')
     global active
     active = True
@@ -376,471 +707,194 @@ def geminiEthbtc(csvfile):
     btcOffset = float(linecache.getline('settings.cfg', 29).rstrip("\n\r"))
     ethReserved = 0
     btcReserved = 0
-    recently = int(linecache.getline('settings.cfg', 25).rstrip("\n\r"))
-    ethbtc = np.zeros(recently)
-    vwap = np.zeros(recently)
-
-
+    ethbtc = 0
+    global e2bRecordBear
+    global b2eRecordBear
+    global graveyardRecordBear
+    global b2eRecordBull
+    global e2bRecordBull
+    global graveyardRecordBull
+    global tradeTimeBear
+    global tradeTimeBull
+    global averageBearTradeTime
+    global stdBearTradeTime
+    global averageBullTradeTime
+    global stdBullTradeTime
+    minuteTimeScale = 15
+    hourTimeScale = 1
+    fastMinuteTimeScale = 5
     e2bRecordBear = pd.DataFrame(
-        columns=['Confirmation', 'Reserved BTC', 'Time', 'Amount', 'Rate', 'ID', 'Delete'])
+        columns=['Confirmation', 'Reserved', 'Time', 'Amount', 'Rate', 'ID', 'Delete'])
     b2eRecordBear = pd.DataFrame(
         columns=['Confirmation', 'Rate Needed', 'Time', 'Amount', 'Rate', 'ID', 'Delete', 'Pair Time'])
-
-    graveyardRecordBear = e2bRecordBear
-
-
+    graveyardRecordBear = b2eRecordBear
     b2eRecordBull = e2bRecordBear
-    e2bRecordBull = e2bRecordBear
-    graveyardRecordBull = e2bRecordBear
-
-
-    mTimeEthbtc = 0
-    hTimeEthbtc = 0
-
-
+    e2bRecordBull = b2eRecordBear
+    graveyardRecordBull = e2bRecordBull
+    lastMinuteTime = 0
+    lastHourTime = 0
+    lastFastMinuteTime = 0
     timeLimit = 900
     global fee
     fee = 0.0025
+    averageBearTradeTime = float(linecache.getline('settings.cfg', 17).rstrip("\n\r"))
+    stdBearTradeTime = float(linecache.getline('settings.cfg', 19).rstrip("\n\r"))
+    tradeTimeBear = np.asarray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    tradeTimeBull = tradeTimeBear
+    tradeTimeBear[-1] = averageBearTradeTime
 
-    tt_bear_mean_init = float(linecache.getline('settings.cfg', 17).rstrip("\n\r"))
-    tt_bear_std_init = float(linecache.getline('settings.cfg', 19).rstrip("\n\r"))
-    tt_bear = np.asarray([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
-    tt_bull = tt_bear
-    tt_bear[-1] = tt_bear_mean_init
-    tt_bull_mean_init = float(linecache.getline('settings.cfg', 21).rstrip("\n\r"))
-    tt_bull_std_init = float(linecache.getline('settings.cfg', 23).rstrip("\n\r"))
-    tt_bull[-1] = tt_bull_mean_init
-
+    averageBullTradeTime = float(linecache.getline('settings.cfg', 21).rstrip("\n\r"))
+    stdBullTradeTime = float(linecache.getline('settings.cfg', 23).rstrip("\n\r"))
+    tradeTimeBull[-1] = averageBullTradeTime
     global loggingEnable
     loggingEnable = str(linecache.getline('settings.cfg', 31)).rstrip("\n\r")
     fname = 'output_gemini_' + str(int(time.time())) + '.txt'
     if (loggingEnable == 'true'):
         f = open(fname, 'w')
         f.close()
+    noHeader = True
+########################################################################################################################
 
-
-    mTries = 10
-
+    # main loop
     while (active):
         lockout = False
-        tradeTimeArray = np.asarray([0,])
-        timeNow = time.strftime('%H:%M:%S')
-        timeNow2 = time.time()
-        logger(fname, timeNow2)
+        timeNow = time.time()
+        logger(fname, timeNow)
 
-        if (np.count_nonzero(tt_bear) == 0):
-            tt_bear_mean, tt_bear_std = norm.fit(tt_bear)
-        else:
-            tt_bear_mean = tt_bear_mean_init
-            tt_bear_std = tt_bear_std_init
-
-        if (np.count_nonzero(tt_bull) == 0):
-            tt_bull_mean, tt_bull_std = norm.fit(tt_bull)
-        else:
-            tt_bull_mean = tt_bull_mean_init
-            tt_bull_std = tt_bull_std_init
-
-
+        # update trade time stats
+        if (np.count_nonzero(tradeTimeBear) == 0):
+            averageBearTradeTime, stdBearTradeTime = norm.fit(tradeTimeBear)
+        if (np.count_nonzero(tradeTimeBull) == 0):
+            averageBullTradeTime, stdBullTradeTime = norm.fit(tradeTimeBull)
 
         # get indicator data
-        timeScale = 1  # in hours
-        if (time.time() >= hTimeEthbtc + timeScale * 3600):
+        timeScale = hourTimeScale  # in hours
+        if (time.time() >= lastHourTime + timeScale * 3600):
             try:
-                hourResults = hourData
+                hourResults = hourData('Gemini', 'ETH', "BTC", str(timeScale), '500')
                 logger(fname, 'new ethbtc hour data!')
+                lastHourTime = hourResults.loc[0, 'time']
             except Exception as e:
                 logger(fname, 'ethbtc hour data try failed')
                 logger(fname, e)
                 lockout = True
-        timeScale = 15  # in minutes
-
-        if (time.time() >= mTimeEthbtc + timeScale * 60):
+        timeScale = minuteTimeScale  # in minutes
+        if (time.time() >= lastMinuteTime + timeScale * 60):
             try:
-                minuteResults = minuteData('Gemini', 'ETH', str(timeScale), '500')
+                minuteResults = minuteData('Gemini', 'ETH', "BTC", str(timeScale), '500')
+                lastMinuteTime = minuteResults.loc[0, 'time']
                 logger(fname, 'new ethbtc minute data!')
             except Exception as e:
                 lockout = True
                 logger(fname, 'ethbtc minute data try failed')
                 logger(fname, e)
+        timeScale = fastMinuteTimeScale  # in minutes
+        if (time.time() >= lastFastMinuteTime + timeScale * 60):
+            try:
+                fastMinuteResults = minuteData('Gemini', 'ETH', "BTC", str(timeScale), '500')
+                lastFastMinuteTime = fastMinuteResults.loc[0, 'time']
+                logger(fname, 'new ethbtc fast minute data!')
+            except Exception as e:
+                lockout = True
+                logger(fname, 'ethbtc fast minute data try failed')
+                logger(fname, e)
 
+        # get current market rate
         try:
-            temp = geminiLastPrice()
-            ethbtc = np.roll(ethbtc, -1)
-            ethbtc[-1] = temp
+            ethbtc = geminiLastPrice()
         except Exception as e:
-            logger(fname, e)
-            logger(fname, 'gemini current price try failed')
-            ethbtc = np.roll(ethbtc, -1)
-            ethbtc[-1] = 0
             lockout = True
 
-        ethReserved = e2bRecordBear["Reserved BTC"].sum()
+
 
         if (lockout == False):
-            e2bSig = Algo.eth2btc_signal_15m_bear(fname, ethbtc, minuteResults, hourResults)
-            logger(fname, 'bear e2bsig is ' + str(e2bSig))
-            if (e2bSig):
-                e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc)
+            # write csv header if need be
+            if (noHeader):
+                minuteResultsHeader = np.array(minuteResults.columns.values.tolist(), dtype=object)
+                for i in range(0, minuteResultsHeader.size):
+                    minuteResultsHeader[i] = minuteResultsHeader[i] + " " + str(minuteTimeScale) + " " + "minute"
+                hourResultsHeader = np.array(hourResults.columns.values.tolist(), dtype=object)
+                for i in range(0, hourResultsHeader.size):
+                    hourResultsHeader[i] = hourResultsHeader[i] + " " + str(hourTimeScale) + " " + "hour"
+                fastMinuteResultsHeader = np.array(fastMinuteResults.columns.values.tolist(), dtype=object)
+                for i in range(0, fastMinuteResultsHeader.size):
+                    fastMinuteResultsHeader[i] = fastMinuteResultsHeader[i] + " " + str(fastMinuteTimeScale) + " " + "minute"
+                header = np.array(["Time", "ETH BTC"], dtype=object)
+                header = np.concatenate((header, minuteResultsHeader, hourResultsHeader, fastMinuteResultsHeader))
+                csv_writer.writerow(header)
+                csvfile.flush()
+                noHeader = False
 
-            e2bConfirmCancelOrders(fname, timeLimit)
+            try:
+                # calculate amount of eth locked up in bear trades so they wont be used in bull trades
+                ethReserved = e2bRecordBear["Reserved"].sum()
+                # core sequence
+                e2bSig = Algo.eth2BtcSignalBear(fname, ethbtc, minuteResults, hourResults)
+                logger(fname, 'bear e2bsig is ' + str(e2bSig))
+                if (e2bSig):
+                    e2bBearTradeExecute(fname, btcOffset, ethOffset, ethReserved, ethbtc)
+                e2bConfirmCancelOrders(fname, timeLimit)
+                e2bBullTradeExecute(fname, ethbtc, fastMinuteResults)
+                b2eConfirmCancelUpdateOrders(fname, ethbtc, fastMinuteResults)
+                sweepBearGraveyard(fname, ethbtc, fastMinuteResults)
+                # write out record to log
+                logger(fname, 'e2b record bear:')
+                logger(fname, e2bRecordBear)
+                logger(fname, 'b2e record bear:')
+                logger(fname, b2eRecordBear)
+                logger(fname, 'graveyardRecordBear:')
+                logger(fname, graveyardRecordBear)
+                logger(fname, 'TICK')
+                logger(fname, '\n')
 
-            b2eBearTradeExecute(fname, ethbtc)
-
-            b2eConfirmCancelUpdateOrders(fname)
 
 
-            for i in range(0, len(graveyardRecordBear)):
-                if (graveyardRecordBear[i][3] != 0 and graveyardRecordBear[i][0] == 0):
-                    rate = Algo.rate_linear_growth(fname, graveyardRecordBear[i][1],
-                                                   time.time() - graveyardRecordBear[i][7], tt_bear_mean,
-                                                   tt_bear_mean + tt_bear_std, ema5_3m, ema10_3m, ethbtc)
-                    order = Gemcon.newOrder(format(graveyardRecordBear[i][3], '.6f'), format(rate, '.5f'), 'buy', None,
-                                            'ethbtc')
-                    if (order.status_code == 200):
-                        graveyardRecordBear[i][5] = int(order.json()['order_id'])
-                        b2eRecordBear = np.vstack((b2eRecordBear, graveyardRecordBear[i]))
-                        graveyardRecordBear[i][6] = 1
-                        logger(fname, 'graveyard bear order resurrected')
-                    else:
-                        logger(fname, order.json())
-                        logger(fname, 'graveyar bear order failed')
-                if (graveyardRecordBear[i][3] != 0 and graveyardRecordBear[i][0] == 2):
-                    rate = Algo.rate_linear_growth(fname, graveyardRecordBear[i][1],
-                                                   time.time() - graveyardRecordBear[i][7], tt_bear_mean,
-                                                   tt_bear_mean + tt_bear_std, ema5_3m, ema10_3m, ethbtc)
-                    temp = Gemcon.orderStatus(graveyardRecordBear[i][5])
-                    if (temp.status_code == 200):
-                        temp = temp.json()
-                        if (float(temp['executed_amount']) == 0):
-                            order = Gemcon.newOrder(format(graveyardRecordBear[i][3]), format(rate, '.5f'), 'buy', None,
-                                                    'ethbtc')
-                            graveyardRecordBear[i][6] = 1
-                            logger(fname, order.json())
-                        else:
-                            order = Gemcon.newOrder(temp['remaining_amount'], format(rate, '.5f'), 'buy', None,
-                                                    'ethbtc')
-                            graveyardRecordBear[i][6] = 1
-                            logger(fname, order.json())
-                        if (order.status_code == 200):
-                            order = order.json()
-                            temp = np.array(
-                                [0, graveyardRecordBear[i][1], graveyardRecordBear[i][2], graveyardRecordBear[i][3],
-                                 rate, int(order['order_id']), 0, graveyardRecordBear[i][7]])
-                            b2eRecordBear = np.vstack(b2eRecordBear, temp)
-                            logger(fname, 'graveyard bear [i][0] order resurrected')
+                # calculate amount of btc locked up in bear trades so they wont be used in bull trades
+                btcReserved = np.sum(e2bRecordBear, 0)[1]
+                # core sequence
+                b2eSig = Algo.btc2ethSignalBear(fname, ethbtc, minuteResults, hourResults)
+                logger(fname, 'bull b2eSig is ' + str(b2eSig))
+                if (b2eSig):
+                    e2bBearTradeExecute(fname, btcOffset, ethOffset, btcReserved, ethbtc)
+                b2eConfirmCancelOrders(fname, timeLimit)
+                b2eBearTradeExecute(fname, ethbtc, fastMinuteResults)
+                e2bConfirmCancelUpdateOrders(fname, ethbtc, fastMinuteResults)
+                sweepBullGraveyard(fname, ethbtc, fastMinuteResults)
+                # write out record to log
+                logger(fname, 'b2e record bull:')
+                logger(fname, b2eRecordBull)
+                logger(fname, 'e2b record bull:')
+                logger(fname, e2bRecordBull)
+                logger(fname, 'graveyard bull:')
+                logger(fname, graveyardRecordBull)
+                logger(fname, 'TOCK')
+                logger(fname, '\n')
+            except Exception as e:
+                logger(fname, e)
+                pass
 
-                        else:
-                            logger(fname, order.json())
-                            logger(fname, 'graveyard bear [i][0] = 2 order failed')
-                    else:
-                        logger(fname, 'graveyard bear order status failed')
 
-            graveyardRecordBear = graveyardRecordBear[graveyardRecordBear[:, 6] == 0]
+            time.sleep(5)
 
-            logger(fname, 'e2b record bear:')
-            logger(fname, e2bRecordBear)
-            logger(fname, 'b2e record bear:')
-            logger(fname, b2eRecordBear)
-            logger(fname, 'graveyardRecordBear:')
-            logger(fname, graveyardRecordBear)
-            logger(fname, 'TICK')
 
-            csv_writer.writerow(
-                [timeNow, timeNow2, ethbtc[-1], mOpen, mClose, mHigh, mLow, mvolfrom, mVolTo, vwap[-1],
-                 williams14h, williams14m, ema5m, ema10m,
-                 dema5, dema10, macd, macdsignal, sls, rsi, uosc,
-                 adx, stocfastk, stocfastd, aroon, di_plus, di_minus, eth, btc, e2bsig, vwapCross, ema5_3m, ema10_3m])
+            # write to csv
+            minuteResultsArray = np.array(minuteResults.iloc[[0]], dtype=object)[0]
+            hourResultsArray = np.array(hourResults.iloc[[0]], dtype=object)[0]
+            fastMinuteResultsArray = np.array(fastMinuteResults.iloc[[0]], dtype=object)[0]
+            row = np.concatenate(( (np.array([timeNow, ethbtc], dtype=object), minuteResultsArray, hourResultsArray, fastMinuteResultsArray)))
+            csv_writer.writerow(row)
             csvfile.flush()
-        else:
-            logger(fname, 'lockout bear is active')
 
-        btcReserved = np.sum(e2bRecordBear, 0)[1]
 
-        if (lockout == False):
-            b2esig = Algo.btc2eth_signal_15m_bull(fname, ethbtc, minuteResults, hourResults)
-            # print 'vwapCross is', vwapCross
-            logger(fname, 'bull b2esig is ' + str(b2esig))
-            if (np.count_nonzero(ethbtc) == recently and np.count_nonzero(vwap) == recently):
-                logger(fname, 'window ready!')
-                if (b2esig == True):
-                    balance = Gemcon.balances()
-                    if (balance.status_code == 200):
-                        balance = balance.json()
-                        for i in range(0, len(balance)):
-                            if (balance[i]['currency'] == 'BTC'):
-                                btc = float(
-                                    balance[i]['available']) + btcOffset
-                            if (balance[i]['currency'] == 'USD'):
-                                usd = float(balance[i]['available'])
-                            if (balance[i]['currency'] == 'ETH'):
-                                eth = float(balance[i]['available']) + ethOffset
-                                eth = roundDown(eth, 6)
-                                logger(fname, eth)
-                    else:
-                        eth = 0
-                        btc = 0
-                        usd = 0
 
-                    if (btc - btcReserved > 0.00001):  # if we have enough btc
-                        market = json.loads(Gemcon.book('ethbtc'))
-                        for i in range(0, len(market['asks'])):
-                            ask_rate = np.round(float(market['asks'][i]['price']), 5)
-                            ask_amount = roundDown(float(market['asks'][i]['amount']), 6)
-                            if (ask_rate / ethbtc[
-                                -1] <= 1.01 and btc - btcReserved > 0.00001):  # if order book is close to our target
-                                total = np.round((ask_rate * ask_amount * (1 + fee)), 5)
-                                if ((btc - btcReserved) < total):
-                                    # execute trade
-                                    amount = ((btc - btcReserved) * (1 - fee)) / (ask_rate)
-                                    amount = roundDown(amount, 6)
-                                    logger(fname, 'selling all btc for eth')
-                                    try:
-                                        order = Gemcon.newOrder(format(amount, '.6f'), format(ask_rate, '.5f'), 'buy',
-                                                                None, 'ethbtc')
-                                        if (order.status_code == 200):
-                                            order = order.json()
-                                            temp = np.array(
-                                                [0, 0, time.time(), amount, ask_rate, int(order['order_id']), 0, 0])
-                                            # [confirmation 0, reserved 1, time 2, amount 3, rate 4, id 5, delete 6, spare 7]
-                                            total = amount * ask_rate * (1 + fee)
-                                            b2eRecordBull = np.vstack((b2eRecordBull, temp))
-                                        else:
-                                            logger(fname, 'b2e order failed')
-                                            logger(fname, order)
-                                    except Exception as e:
-                                        logger(fname, e)
-                                        logger(fname, 'b2e order try failed')
-                                else:
-                                    logger(fname, 'selling some btc for eth')
-                                    try:
-                                        order = Gemcon.newOrder(format(total, '.6f'), format(ask_rate, '.5f'), 'buy',
-                                                                None, 'ethbtc')
-                                        if (order.status_code == 200):
-                                            order = order.json()
-                                            temp = np.array(
-                                                [0, 0, time.time(), total, ask_rate, int(order['order_id']), 0, 0])
-                                            # [confirmation 0, reserved eth 1, time 2, amount 3, rate 4, id 5, delete 6, spare 7]
-                                            b2eRecordBull = np.vstack((b2eRecordBull, temp))
-                                            total = ask_rate * ask_amount * (1 + fee)
-                                        else:
-                                            logger(fname, 'b2e order failed')
-                                            logger(fname, order)
-                                    except Exception as e:
-                                        logger(fname, e)
-                                        logger(fname, 'b2e order try failed')
-
-                                balance = Gemcon.balances()
-                                if (balance.status_code == 200):
-                                    balance = balance.json()
-                                    for i in range(0, len(balance)):
-                                        if (balance[i]['currency'] == 'BTC'):
-                                            btc = float(
-                                                balance[i]['available']) + btcOffset
-                                        if (balance[i]['currency'] == 'USD'):
-                                            usd = float(balance[i]['available'])
-                                        if (balance[i]['currency'] == 'ETH'):
-                                            eth = float(balance[i]['available']) + ethOffset
-                                            eth = roundDown(eth, 6)
-                                            logger(fname, eth)
-                                else:
-                                    eth = 0
-                                    btc = 0
-                                    usd = 0
-                            else:
-                                logger(fname, 'order book not close enough')
-                                break
-                    else:
-                        logger(fname, 'not enough btc')
-
-            for i in range(0, len(b2eRecordBull)):
-                if (int(b2eRecordBull[i][5]) != 0):
-                    if (int(b2eRecordBull[i][0]) == 0):
-                        temp = Gemcon.orderStatus(b2eRecordBull[i][5])
-                        if (temp.status_code == 200):
-                            temp = temp.json()
-                            logger(fname, temp)
-                            logger(fname, time.time() - int(temp['timestamp']))
-                            if (temp['is_live'] == False and temp['is_cancelled'] == True and temp[
-                                'executed_amount'] == '0'):
-                                b2eRecordBull[i][6] = 1
-                            if (temp['is_live'] == False and temp['is_cancelled'] == False):
-                                b2eRecordBull[i][0] = 1
-                                b2eRecordBull[i][1] = b2eRecordBull[i][3]
-                                b2eRecordBull[i][4] = float(temp['avg_execution_price'])
-                                logger(fname, 'filled b2e bull trade has been confirmed')
-                            if (temp['is_live'] == True and temp['is_cancelled'] == False):
-                                if (time.time() - int(temp['timestamp']) > timeLimit):
-                                    if (Gemcon.cancelOrder(b2eRecordBull[i][5]).status_code == 200):
-                                        temp = Gemcon.orderStatus(b2eRecordBull[i][5])
-                                        if (temp.status_code == 200):
-                                            temp = temp.json()
-                                            if (float(temp['executed_amount']) == 0):
-                                                b2eRecordBull[i][6] = 1
-                                                logger(fname, 'canceled bammer order')
-                                            else:
-                                                b2eRecordBull[i][3] = float(temp['executed_amount'])
-                                                b2eRecordBull[i][0] = 1
-                                                b2eRecordBull[i][1] = b2eRecordBull[i][3]
-                                                logger(fname, 'canceled partially filled b2e bull order')
-                                        else:
-                                            b2eRecordBull[i][0] = 2
-                                            logger(fname, 'b2e bull order status (2nd round) failed')
-                                    else:
-                                        logger(fname, 'canceling partial b2e bull order failed')
-                                        b2eRecordBull[i][1] = b2eRecordBull[i][3]
-                        else:
-                            logger(fname, 'b2e bull order status failed')
-                    if (b2eRecordBull[i][0] == 2):
-                        temp = Gemcon.orderStatus(b2eRecordBull[i][5])
-                        if (temp.status_code == 200):
-                            temp = temp.json()
-                            if (float(temp['executed_amount']) == 0):
-                                b2eRecordBull[i][6] = 1
-                                logger(fname, 'canceled bammer order')
-                            else:
-                                b2eRecordBull[i][3] = float(temp['executed_amount'])
-                                b2eRecordBull[i][0] = 1
-                                b2eRecordBull[i][1] = b2eRecordBull[i][3]
-                                logger(fname, 'canceled partially filled b2e bull order')
-
-            b2eRecordBull = b2eRecordBull[b2eRecordBull[:, 6] == 0]
-
-            for i in range(0, len(b2eRecordBull)):
-                e2b = Algo.eth2btc_signal_with_decay_bull(fname, ethbtc, ema5m, ema10m, b2eRecordBull[i][3],
-                                                          b2eRecordBull[i][4], time.time() - b2eRecordBull[i][2],
-                                                          ema5_3m, ema10_3m, tt_bull_mean, tt_bull_mean + tt_bull_std)
-                if (b2eRecordBull[i][0] == 1 and e2b[0] == 1):
-                    logger(fname, 'eth 2 btc bull signal')
-                    order = Gemcon.newOrder(format(b2eRecordBull[i][3], '.6f'), format(ethbtc[-1], '.5f'), 'sell', None,
-                                            'ethbtc')
-                    if (order.status_code == 200):
-                        order = order.json()
-                        temp = np.array(
-                            [0, e2b[1], time.time(), b2eRecordBull[i][3], ethbtc[-1], int(order['order_id']), 0,
-                             b2eRecordBull[i][2]])
-                        # [confirmation 0,  rn 1, time 2, amount 3, rate 4, id 5, delete 6, pair time 7]
-                        e2bRecordBull = np.vstack((e2bRecordBull, temp))
-                        b2eRecordBull[i][6] = 1
-                    else:
-                        logger(fname, 'e2b bull trade failed')
-
-            b2eRecordBull = b2eRecordBull[b2eRecordBull[:, 6] == 0]
-
-            for i in range(0, len(e2bRecordBull)):
-                if (int(e2bRecordBull[i][5]) != 0 and int(e2bRecordBull[i][5]) != 2):
-                    temp = Gemcon.orderStatus(e2bRecordBull[i][5])
-                    if (temp.status_code == 200):
-                        temp = temp.json()
-                        if (temp['is_live'] == False and temp['is_cancelled'] == False):
-                            e2bRecordBull[i][0] = 1
-                            e2bRecordBull[i][6] = 1
-                            e2bRecordBull[i][1] = 1
-                            tt_bull = np.roll(tt_bull, -1)
-                            tt_bull[-1] = time.time() - e2bRecordBull[i][7]
-                            logger(fname, 'filled e2b bull trade has been confirmed')
-                        if (temp['is_live'] == True and temp['is_cancelled'] == False):
-                            e2bRecordBull[i][0] = 1
-                            logger(fname, 'e2b bull trade has been confirmed')
-                        if (int(e2bRecordBull[i][0]) == 1 and int(e2bRecordBull[i][6]) == 0):
-                            rate = Algo.rate_linear_decay(fname, e2bRecordBull[i][1], time.time() - e2bRecordBull[i][7],
-                                                          tt_bull_mean, tt_bull_mean + tt_bull_std, ema5_3m, ema10_3m,
-                                                          ethbtc)
-                            if (rate != e2bRecordBull[i][4]):
-                                if ((Gemcon.cancelOrder(e2bRecordBull[i][5]).status_code) == 200):
-                                    temp = Gemcon.orderStatus(e2bRecordBull[i][5])
-                                    if (temp.status_code == 200):
-                                        temp = temp.json()
-                                        if (float(temp['executed_amount']) == 0):
-                                            order = Gemcon.newOrder(format(e2bRecordBull[i][3], '.6f'),
-                                                                    format(rate, '.5f'), 'sell', None, 'ethbtc')
-                                            e2bRecordBull[i][6] = 1
-                                        else:
-                                            order = Gemcon.newOrder(temp['remaining_amount'], format(rate, '.5f'),
-                                                                    'sell', None, 'ethbtc')
-                                            e2bRecordBull[i][6] = 1
-                                        if (order.status_code == 200):
-                                            order = order.json()
-                                            temp = np.array(
-                                                [0, e2bRecordBull[i][1], e2bRecordBull[i][2], e2bRecordBull[i][3], rate,
-                                                 int(order['order_id']), 0, e2bRecordBull[i][7]])
-                                            e2bRecordBull = np.vstack((e2bRecordBull, temp))
-                                        else:
-                                            logger(fname, 'placing new rate bull order failed')
-                                            temp = np.array(
-                                                [0, e2bRecordBull[i][1], e2bRecordBull[i][2], e2bRecordBull[i][3], rate,
-                                                 int(temp['order_id']), 0, e2bRecordBull[i][7]])
-                                            graveyardRecordBull = np.vstack((graveyardRecordBull, temp))
-                                    else:
-                                        e2bRecordBull[i][0] = 2
-                                        temp = np.array(e2bRecordBull[i])
-                                        graveyardRecordBull = np.vstack((graveyardRecordBull, temp))
-                                        e2bRecordBull[i][6] = 1
-                                        logger(fname, 'e2b bull order status failed after new rate')
-                                else:
-                                    logger(fname, 'canceling e2b bull record for new rate failed')
-                    else:
-                        logger(fname, 'e2b record bull order status failed')
-
-            e2bRecordBull = e2bRecordBull[e2bRecordBull[:, 6] == 0]
-
-            for i in range(0, len(graveyardRecordBull)):
-                if (graveyardRecordBull[i][3] != 0 and graveyardRecordBull[i][0] == 0):
-                    rate = Algo.rate_linear_decay(fname, graveyardRecordBull[i][1],
-                                                  time.time() - graveyardRecordBull[i][7], tt_bull_mean,
-                                                  tt_bull_mean + tt_bull_std, ema5_3m, ema10_3m, ethbtc)
-                    order = Gemcon.newOrder(format(graveyardRecordBull[i][3], '.6f'), format(rate, '.5f'), 'sell', None,
-                                            'ethbtc')
-                    if (order.status_code == 200):
-                        graveyardRecordBull[i][5] = int(order.json()['order_id'])
-                        e2bRecordBull = np.vstack((e2bRecordBull, graveyardRecordBull[i]))
-                        graveyardRecordBull[i][6] = 1
-                        logger(fname, 'graveyard record bull order resurrected')
-                    else:
-                        logger(fname, order.json())
-                        logger(fname, 'graveyard record bull order failed')
-                if (graveyardRecordBull[i][3] != 0 and graveyardRecordBull[i][0] == 2):
-                    rate = Algo.rate_linear_decay(fname, graveyardRecordBull[i][1],
-                                                  time.time() - graveyardRecordBull[i][2], tt_bull_mean,
-                                                  tt_bull_mean + tt_bull_std, ema5_3m, ema10_3m, ethbtc)
-                    temp = Gemcon.orderStatus(graveyardRecordBull[i][5])
-                    if (temp.status_code == 200):
-                        temp = temp.json()
-                        if (float(temp['executed_amount']) == 0):
-                            order = Gemcon.newOrder(format(graveyardRecordBull[i][3], '.6f'), format(rate, '.5f'),
-                                                    'sell', None, 'ethbtc')
-                            graveyardRecordBull[i][6] = 1
-                        else:
-                            order = Gemcon.newOrder(temp['remaining_amount'], format(rate, '.5f'), 'sell', None,
-                                                    'ethbtc')
-                            graveyardRecordBull[i][6] = 1
-                        if (order.status_code == 200):
-                            order = order.json()
-                            temp = np.array(
-                                [0, graveyardRecordBull[i][1], graveyardRecordBull[i][2], graveyardRecordBull[i][3],
-                                 rate, int(order['order_id']), 0, graveyardRecordBull[i][7]])
-                            e2bRecordBull = np.vstack((graveyardRecordBull[i], temp))
-                        else:
-                            logger(fname, order.json())
-                            logger(fname, 'graveyard [i][1] = 2 order failed')
-                    else:
-                        logger(fname, 'graveyard bull order status failed')
-
-            graveyardRecordBull = graveyardRecordBull[graveyardRecordBull[:, 6] == 0]
-
-            logger(fname, 'e2b record bull:')
-            logger(fname, e2bRecordBull)
-            logger(fname, 'b2e record bull:')
-            logger(fname, b2eRecordBull)
-            logger(fname, 'graveyard bull:')
-            logger(fname, graveyardRecordBull)
-            logger(fname, 'TOCK')
-            logger(fname, '\n')
-
-            time.sleep(3)
 
         else:
-            logger(fname, 'lockout bull is active')
+            logger(fname, 'lockout is active')
+            
 
 
-with open('results_' + str(time.time()) + '.csv', 'wb') as csvfile:
-    gemini_Ethbtc(csvfile)
+
+with open('results_' + str(time.time()) + '.csv', 'w+', newline='') as csvfile:
+    Gemcon.cancel_all()
+    #quit()
+    geminiEthbtc(csvfile)
